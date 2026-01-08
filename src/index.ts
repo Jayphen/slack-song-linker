@@ -157,6 +157,20 @@ async function handleMusicLinks(
 
       if (!slackData.ok) {
         console.error("Slack API error:", slackData.error);
+
+        // Reply to user with the error message
+        await fetch("https://slack.com/api/chat.postMessage", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${botToken}`,
+            "Content-Type": "application/json; charset=utf-8",
+          },
+          body: JSON.stringify({
+            channel: message.channel,
+            text: `⚠️ Error: ${slackData.error || "Failed to post message"}`,
+            thread_ts: message.ts,
+          }),
+        });
       }
     } catch (error) {
       console.error("Error processing music link:", error);
