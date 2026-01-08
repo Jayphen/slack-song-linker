@@ -10,7 +10,7 @@ import type {
 const app = new Hono<{ Bindings: Env }>();
 
 const MUSIC_URL_REGEX =
-  /(https?:\/\/)?(open\.spotify\.com|tidal\.com|music\.youtube\.com|youtu\.be|youtube\.com\/watch)\/[^\s]+/gi;
+  /(https?:\/\/)?(open\.spotify\.com|music\.apple\.com|itunes\.apple\.com|youtube\.com|youtu\.be|music\.youtube\.com|play\.google\.com|pandora\.com|deezer\.com|tidal\.com|amazon\.com\/music|music\.amazon\.com|soundcloud\.com|(?:web\.)?napster\.com|music\.yandex\.(?:com|ru)|spinrilla\.com|audius\.co|anghami\.com|boomplay\.com|audiomack\.com|[\w-]+\.bandcamp\.com|bandcamp\.com)\/[^\s]+/gi;
 
 // Verify Slack request signature
 async function verifySlackRequest(
@@ -94,37 +94,58 @@ async function handleMusicLinks(
   message: SlackMessageEvent,
   botToken: string,
 ): Promise<void> {
+  if (!message.text) {
+    return;
+  }
+
   const matches = message.text.match(MUSIC_URL_REGEX);
 
-  if (!matches) return;
+  if (!matches) {
+    return;
+  }
 
   for (const url of matches) {
     try {
+      // Remove Slack's URL wrapping (< and >)
+      const cleanUrl = url.replace(/^<|>$/g, '');
+
       // Call song.link API
-      const response = await fetch(
-        `https://api.song.link/v1-alpha.1/links?url=${encodeURIComponent(url)}`,
-      );
+      const apiUrl = `https://api.song.link/v1-alpha.1/links?url=${encodeURIComponent(cleanUrl)}`;
+
+      const response = await fetch(apiUrl);
 
       if (!response.ok) {
-        console.error("song.link API error:", response.status);
+        const errorText = await response.text();
+        console.error("song.link API error:", response.status, errorText);
         continue;
       }
 
       const data: SongLinkResponse = await response.json();
+
       const songLink = data.pageUrl;
 
+      // Extract YouTube URL if available for video embed
+      const youtubeUrl = data.linksByPlatform?.youtube?.url ||
+                         data.linksByPlatform?.youtubeMusic?.url;
+
       // Post to Slack
+      const slackPayload = {
+        channel: message.channel,
+        text: youtubeUrl
+          ? `🎵 <${songLink}>\n${youtubeUrl}`
+          : `🎵 <${songLink}>`,
+        thread_ts: message.ts,
+        unfurl_links: true,
+        unfurl_media: true,
+      };
+
       const slackResponse = await fetch("https://slack.com/api/chat.postMessage", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${botToken}`,
-          "Content-Type": "application/json",
+          "Content-Type": "application/json; charset=utf-8",
         },
-        body: JSON.stringify({
-          channel: message.channel,
-          text: `🎵 ${songLink}`,
-          thread_ts: message.ts,
-        }),
+        body: JSON.stringify(slackPayload),
       });
 
       if (!slackResponse.ok) {
@@ -133,6 +154,7 @@ async function handleMusicLinks(
       }
 
       const slackData = await slackResponse.json() as SlackApiResponse;
+
       if (!slackData.ok) {
         console.error("Slack API error:", slackData.error);
       }

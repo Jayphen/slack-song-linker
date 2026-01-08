@@ -13,7 +13,7 @@ export interface SlackMessageEvent {
   type: string;
   channel: string;
   user: string;
-  text: string;
+  text?: string;
   ts: string;
   bot_id?: string;
 }
@@ -22,7 +22,20 @@ export interface SongLinkResponse {
   pageUrl: string;
   entityUniqueId: string;
   userCountry: string;
-  // Add other fields as needed
+  linksByPlatform: {
+    youtube?: {
+      url: string;
+      entityUniqueId: string;
+    };
+    youtubeMusic?: {
+      url: string;
+      entityUniqueId: string;
+    };
+    [key: string]: any;
+  };
+  entitiesByUniqueId: {
+    [key: string]: any;
+  };
 }
 
 export interface SlackApiResponse {
