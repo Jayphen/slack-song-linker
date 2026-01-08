@@ -24,3 +24,8 @@ export interface SongLinkResponse {
   userCountry: string;
   // Add other fields as needed
 }
+
+export interface SlackApiResponse {
+  ok: boolean;
+  error?: string;
+}

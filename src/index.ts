@@ -4,6 +4,7 @@ import type {
   SlackEvent,
   SlackMessageEvent,
   SongLinkResponse,
+  SlackApiResponse,
 } from "./types";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -131,7 +132,7 @@ async function handleMusicLinks(
         continue;
       }
 
-      const slackData = await slackResponse.json();
+      const slackData = await slackResponse.json() as SlackApiResponse;
       if (!slackData.ok) {
         console.error("Slack API error:", slackData.error);
       }
