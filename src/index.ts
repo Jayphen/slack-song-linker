@@ -100,14 +100,18 @@ async function handleMusicLinks(
 
   const matches = message.text.match(MUSIC_URL_REGEX);
 
+  console.log({ matches });
+
   if (!matches) {
     return;
   }
 
+  console.log("matched!");
+
   for (const url of matches) {
     try {
       // Remove Slack's URL wrapping (< and >)
-      const cleanUrl = url.replace(/^<|>$/g, '');
+      const cleanUrl = url.replace(/^<|>$/g, "");
 
       // Call song.link API
       const apiUrl = `https://api.song.link/v1-alpha.1/links?url=${encodeURIComponent(cleanUrl)}`;
@@ -117,6 +121,26 @@ async function handleMusicLinks(
       if (!response.ok) {
         const errorText = await response.text();
         console.error("song.link API error:", response.status, errorText);
+
+        // Determine error message based on status code
+        const errorMessage =
+          response.status === 429
+            ? "we got rate limited again. sigh"
+            : `⚠️ Sorry, I couldn't process that music link. The song.link API returned an error (${response.status}). This might happen if the link type isn't supported or the service is temporarily unavailable.`;
+
+        // Notify user of the error
+        await fetch("https://slack.com/api/chat.postMessage", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${botToken}`,
+            "Content-Type": "application/json; charset=utf-8",
+          },
+          body: JSON.stringify({
+            channel: message.channel,
+            text: errorMessage,
+            thread_ts: message.ts,
+          }),
+        });
         continue;
       }
 
@@ -125,8 +149,9 @@ async function handleMusicLinks(
       const songLink = data.pageUrl;
 
       // Extract YouTube URL if available for video embed
-      const youtubeUrl = data.linksByPlatform?.youtube?.url ||
-                         data.linksByPlatform?.youtubeMusic?.url;
+      const youtubeUrl =
+        data.linksByPlatform?.youtube?.url ||
+        data.linksByPlatform?.youtubeMusic?.url;
 
       // Post to Slack
       const slackPayload = {
@@ -139,21 +164,24 @@ async function handleMusicLinks(
         unfurl_media: true,
       };
 
-      const slackResponse = await fetch("https://slack.com/api/chat.postMessage", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${botToken}`,
-          "Content-Type": "application/json; charset=utf-8",
+      const slackResponse = await fetch(
+        "https://slack.com/api/chat.postMessage",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${botToken}`,
+            "Content-Type": "application/json; charset=utf-8",
+          },
+          body: JSON.stringify(slackPayload),
         },
-        body: JSON.stringify(slackPayload),
-      });
+      );
 
       if (!slackResponse.ok) {
         console.error("Slack API HTTP error:", slackResponse.status);
         continue;
       }
 
-      const slackData = await slackResponse.json() as SlackApiResponse;
+      const slackData = (await slackResponse.json()) as SlackApiResponse;
 
       if (!slackData.ok) {
         console.error("Slack API error:", slackData.error);
