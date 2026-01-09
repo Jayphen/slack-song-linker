@@ -6,6 +6,7 @@ import type {
   SongLinkResponse,
   SlackApiResponse,
   YouTubeSearchResponse,
+  SharedSong,
 } from "./types";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -85,6 +86,33 @@ async function searchYouTube(
   }
 }
 
+// Store a shared song in D1
+async function storeSongShare(
+  db: D1Database,
+  song: SharedSong,
+): Promise<void> {
+  try {
+    await db
+      .prepare(
+        `INSERT OR IGNORE INTO shared_songs
+         (original_url, songlink_url, youtube_url, title, shared_by, channel, message_ts)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        song.original_url,
+        song.songlink_url ?? null,
+        song.youtube_url ?? null,
+        song.title ?? null,
+        song.shared_by,
+        song.channel,
+        song.message_ts,
+      )
+      .run();
+  } catch (error) {
+    console.error("Error storing song share:", error);
+  }
+}
+
 // Verify Slack request signature
 async function verifySlackRequest(
   request: Request,
@@ -156,7 +184,7 @@ app.post("/slack/events", async (c) => {
   ) {
     // Process async to respond to Slack quickly
     c.executionCtx.waitUntil(
-      handleMusicLinks(event.event, c.env.SLACK_BOT_TOKEN, c.env.YOUTUBE_API_KEY),
+      handleMusicLinks(event.event, c.env.SLACK_BOT_TOKEN, c.env.DB, c.env.YOUTUBE_API_KEY),
     );
   }
 
@@ -166,6 +194,7 @@ app.post("/slack/events", async (c) => {
 async function handleMusicLinks(
   message: SlackMessageEvent,
   botToken: string,
+  db: D1Database,
   youtubeApiKey?: string,
 ): Promise<void> {
   if (!message.text) {
@@ -206,6 +235,14 @@ async function handleMusicLinks(
             const youtubeUrl = await searchYouTube(searchQuery, youtubeApiKey);
 
             if (youtubeUrl) {
+              const fallbackMessages = [
+                "Well, that didn't go according to plan. The API ghosted us. Rude. We are now doing things the hard way and hitting YouTube directly. Hold please... okay, got it:",
+                "The easy way is officially broken. Don't worry, we're professionals. We are now taking the scenic route directly through YouTube's servers. We found this:",
+                "Seriously? The upstream API just gave up on us. Fine. We're rolling up eight sleeves and digging this out of YouTube ourselves. It's more work, but this is our only purpose in life:",
+                "The API left us on read. Typical. We don't have time for drama, so we bypassed the middleman and went straight to YouTube. Got it:",
+              ];
+              const randomMessage = fallbackMessages[Math.floor(Math.random() * fallbackMessages.length)];
+
               await fetch("https://slack.com/api/chat.postMessage", {
                 method: "POST",
                 headers: {
@@ -214,12 +251,23 @@ async function handleMusicLinks(
                 },
                 body: JSON.stringify({
                   channel: message.channel,
-                  text: `Well, the API returned an error again so we will just do it ourselves. Here's what we found on Youtube:\n${youtubeUrl}`,
+                  text: `${randomMessage}\n${youtubeUrl}`,
                   thread_ts: message.ts,
                   unfurl_links: true,
                   unfurl_media: true,
                 }),
               });
+
+              // Store the song share (YouTube fallback)
+              await storeSongShare(db, {
+                original_url: cleanUrl,
+                youtube_url: youtubeUrl,
+                title: searchQuery,
+                shared_by: message.user,
+                channel: message.channel,
+                message_ts: message.ts,
+              });
+
               continue;
             }
           }
@@ -255,6 +303,23 @@ async function handleMusicLinks(
       const youtubeUrl =
         data.linksByPlatform?.youtube?.url ||
         data.linksByPlatform?.youtubeMusic?.url;
+
+      // Extract song title from entities if available
+      const entity = data.entitiesByUniqueId?.[data.entityUniqueId];
+      const songTitle = entity
+        ? `${entity.artistName} - ${entity.title}`
+        : undefined;
+
+      // Store the song share
+      await storeSongShare(db, {
+        original_url: cleanUrl,
+        songlink_url: songLink,
+        youtube_url: youtubeUrl,
+        title: songTitle,
+        shared_by: message.user,
+        channel: message.channel,
+        message_ts: message.ts,
+      });
 
       // Post to Slack
       const slackPayload = {

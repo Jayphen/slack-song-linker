@@ -3,3 +3,9 @@ node_modules
 dist/
 .dev.vars
 .env
+
+# Script generated/sensitive files
+scripts/oauth-credentials.json
+scripts/youtube-token.json
+scripts/songs.json
+scripts/backfill.sql
