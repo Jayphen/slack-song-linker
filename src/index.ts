@@ -5,12 +5,85 @@ import type {
   SlackMessageEvent,
   SongLinkResponse,
   SlackApiResponse,
+  YouTubeSearchResponse,
 } from "./types";
 
 const app = new Hono<{ Bindings: Env }>();
 
 const MUSIC_URL_REGEX =
   /(https?:\/\/)?(open\.spotify\.com|music\.apple\.com|itunes\.apple\.com|youtube\.com|youtu\.be|music\.youtube\.com|play\.google\.com|pandora\.com|deezer\.com|tidal\.com|amazon\.com\/music|music\.amazon\.com|soundcloud\.com|(?:web\.)?napster\.com|music\.yandex\.(?:com|ru)|spinrilla\.com|audius\.co|anghami\.com|boomplay\.com|audiomack\.com|[\w-]+\.bandcamp\.com|bandcamp\.com)\/[^\s]+/gi;
+
+// Extract a search query from a music URL by fetching the page title
+async function extractSearchQuery(url: string): Promise<string | null> {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+      },
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const html = await response.text();
+
+    // Try to extract title from HTML
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    if (titleMatch) {
+      let title = titleMatch[1]
+        // Remove "- Platform" or "| Platform" suffixes
+        .replace(/\s*[-|–—]\s*(Spotify|Apple Music|SoundCloud|Bandcamp|Deezer|Tidal|YouTube|YouTube Music|Amazon Music|Pandora|Listen|Play|Stream).*$/i, "")
+        // Remove "on Platform" suffixes (e.g., "Song by Artist on TIDAL")
+        .replace(/\s+on\s+(Spotify|Apple Music|SoundCloud|Bandcamp|Deezer|Tidal|YouTube|YouTube Music|Amazon Music|Pandora|Listen|Play|Stream).*$/i, "")
+        .replace(/&amp;/g, "&")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .trim();
+
+      if (title.length > 3) {
+        return title;
+      }
+    }
+
+    return null;
+  } catch (error) {
+    console.error("Error extracting search query:", error);
+    return null;
+  }
+}
+
+// Search YouTube using Data API v3
+async function searchYouTube(
+  query: string,
+  apiKey: string,
+): Promise<string | null> {
+  try {
+    const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&videoCategoryId=10&maxResults=1&key=${apiKey}`;
+
+    const response = await fetch(searchUrl);
+
+    if (!response.ok) {
+      console.error("YouTube API error:", response.status);
+      return null;
+    }
+
+    const data: YouTubeSearchResponse = await response.json();
+
+    if (data.items && data.items.length > 0) {
+      const videoId = data.items[0].id.videoId;
+      return `https://www.youtube.com/watch?v=${videoId}`;
+    }
+
+    return null;
+  } catch (error) {
+    console.error("Error searching YouTube:", error);
+    return null;
+  }
+}
 
 // Verify Slack request signature
 async function verifySlackRequest(
@@ -83,7 +156,7 @@ app.post("/slack/events", async (c) => {
   ) {
     // Process async to respond to Slack quickly
     c.executionCtx.waitUntil(
-      handleMusicLinks(event.event, c.env.SLACK_BOT_TOKEN),
+      handleMusicLinks(event.event, c.env.SLACK_BOT_TOKEN, c.env.YOUTUBE_API_KEY),
     );
   }
 
@@ -93,6 +166,7 @@ app.post("/slack/events", async (c) => {
 async function handleMusicLinks(
   message: SlackMessageEvent,
   botToken: string,
+  youtubeApiKey?: string,
 ): Promise<void> {
   if (!message.text) {
     return;
@@ -121,6 +195,35 @@ async function handleMusicLinks(
       if (!response.ok) {
         const errorText = await response.text();
         console.error("song.link API error:", response.status, errorText);
+
+        // Try YouTube fallback if API key is configured
+        if (youtubeApiKey) {
+          console.log("Attempting YouTube fallback...");
+          const searchQuery = await extractSearchQuery(cleanUrl);
+
+          if (searchQuery) {
+            console.log("Search query extracted:", searchQuery);
+            const youtubeUrl = await searchYouTube(searchQuery, youtubeApiKey);
+
+            if (youtubeUrl) {
+              await fetch("https://slack.com/api/chat.postMessage", {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${botToken}`,
+                  "Content-Type": "application/json; charset=utf-8",
+                },
+                body: JSON.stringify({
+                  channel: message.channel,
+                  text: `Well, the API returned an error again so we will just do it ourselves. Here's what we found on Youtube:\n${youtubeUrl}`,
+                  thread_ts: message.ts,
+                  unfurl_links: true,
+                  unfurl_media: true,
+                }),
+              });
+              continue;
+            }
+          }
+        }
 
         // Determine error message based on status code
         const errorMessage =
